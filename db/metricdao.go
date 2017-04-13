@@ -1,8 +1,12 @@
 package db
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"gopkg.in/mgo.v2"
@@ -13,81 +17,91 @@ import (
 )
 
 var (
-	MetricCache *cache.Cache = cache.New(5*time.Minute, 10*time.Minute)
+	MetricKeyCache *cache.Cache = cache.New(24*time.Hour, 10*time.Minute)
 )
 
 type MetricDao struct {
-	BulkSize      int
-	FlushInterval uint32
-	dataChannel   chan Metric
-	count         int
+	bulkSize       int
+	flushInterval  uint32
+	count          int
+	lock           *sync.RWMutex
+	dataChannelMap map[string]chan Metric
 }
 
-func NewMetricDao(size int, interval uint32) *MetricDao {
+func NewMetricDao(size int, interval int) *MetricDao {
 	u := new(MetricDao)
-	u.BulkSize = size
-	u.FlushInterval = interval
-	u.dataChannel = make(chan Metric, 1000000)
+	u.bulkSize = size
+	u.flushInterval = uint32(interval)
+	u.lock = new(sync.RWMutex)
+	u.dataChannelMap = make(map[string]chan Metric)
 	go u.MetricDaoTimer()
 	return u
 }
 
-func (u *MetricDao) Add(metric Metric) error {
-	u.dataChannel <- metric
-	if len(u.dataChannel) >= u.BulkSize {
-		fmt.Println("批量保存")
-		metrics := u.getData()
-		return u.insert(metrics)
+func (u *MetricDao) Add(metric Metric) {
+	var mChanel chan Metric
+	var present bool
+	u.lock.RLock()
+	if mChanel, present = u.dataChannelMap[metric.MetricName]; !present {
+		u.lock.RUnlock()
+		u.lock.Lock()
+		if mChanel, present = u.dataChannelMap[metric.MetricName]; !present {
+			mChanel = make(chan Metric, 2*u.bulkSize)
+			u.dataChannelMap[metric.MetricName] = mChanel
+		}
+		u.lock.Unlock()
+	} else {
+		u.lock.RUnlock()
 	}
-	return nil
+	select {
+	case mChanel <- metric: //channel未满
+		//fmt.Println("channel未满")
+	default: //channel已满
+		//fmt.Println("channel已满,批量保存")
+		u.bulkSave(metric.MetricName, mChanel)
+		mChanel <- metric
+	}
 }
 func (u *MetricDao) MetricDaoTimer() {
-	timer1 := time.NewTicker(time.Duration(u.FlushInterval) * time.Second)
+	timer1 := time.NewTicker(time.Duration(u.flushInterval) * time.Second)
 	for {
 		select {
 		case <-timer1.C:
-			u.callback(nil)
+			//fmt.Println("超时自动保存")
+			for k, v := range u.dataChannelMap {
+				u.bulkSave(k, v)
+			}
 		}
 	}
 }
 
-func (u *MetricDao) callback(args interface{}) error {
-	fmt.Println("超时自动保存")
-	metrics := u.getData()
-	return u.insert(metrics)
-}
-
-func (u *MetricDao) getData() *[]Metric {
-	size := len(u.dataChannel)
-	if size > u.BulkSize {
-		size = u.BulkSize
-	}
-	metrics := make([]Metric, 0, size)
-	for i := 0; i < size; i++ {
+func (u *MetricDao) bulkSave(collection string, dataChannel chan Metric) {
+	metrics := new([]Metric)
+LABEL_BREAK:
+	for i := 0; i < u.bulkSize; i++ {
 		select {
-		case <-time.After(1 * time.Second):
-			//fmt.Println("channel timeout 1 second")
-			break
-		case metric := <-u.dataChannel:
-			metrics = append(metrics, metric)
+		case metric := <-dataChannel:
+			//metrics = append(metrics, metric)
+			metrics = u.merge(metrics, metric)
+		default:
+			break LABEL_BREAK
 		}
 	}
-	return &metrics
+	u.insert(collection, metrics)
 }
 
-func (u *MetricDao) insert(metrics *[]Metric) error {
+func (u *MetricDao) insert(collection string, metrics *[]Metric) error {
 	size := len(*metrics)
 	if size == 0 {
-		fmt.Println("没有需要保存的数据")
+		//fmt.Println("没有需要保存的数据")
 		return nil
 	}
 	u.count = u.count + size
-	fmt.Println("保存", size, "条数据，累计保存", u.count, "条数据")
+	//fmt.Println("保存", size, "条数据，累计保存", u.count, "条数据")
 
-	//session := u.getSession()
 	session := GetInstance().GetSession()
 	defer session.Close()
-	c := session.DB(DB).C(COLLECTION)
+	c := session.DB(DB).C(collection)
 	bulk := c.Bulk()
 	bulkCount := 0
 	for _, v := range *metrics {
@@ -95,9 +109,9 @@ func (u *MetricDao) insert(metrics *[]Metric) error {
 		for k, v := range v.MetricTag {
 			selector["metric_tag."+k] = v
 		}
-
-		if _, found := MetricCache.Get(v.MetricName); !found {
-			MetricCache.Set(v.MetricName, true, cache.NoExpiration)
+		metricKey := u.getMetricKey(&v)
+		if _, found := MetricKeyCache.Get(metricKey); !found {
+			MetricKeyCache.Set(metricKey, true, cache.NoExpiration)
 
 			updateSet := bson.M{"lastest_value": v.LastestValue, "lastest_update_date": v.LastestUpdateDate}
 			timeSeries := make([]Timeseries, 0, 24)
@@ -107,20 +121,26 @@ func (u *MetricDao) insert(metrics *[]Metric) error {
 			}
 			updateSetOnInsert := bson.M{"timeseries": timeSeries}
 			bulk.Upsert(selector, bson.M{"$set": updateSet, "$setOnInsert": updateSetOnInsert})
+
 			bulkCount += 1
 			if bulkCount == 1000 {
 				bulkCount = 0
 				u.runBulk(bulk)
+				bulk = c.Bulk()
 			}
+
 		}
 
 		for _, ts := range v.Timeseries {
 			bulk.Update(selector, bson.M{"$set": bson.M{"lastest_value": v.LastestValue}, "$push": bson.M{"timeseries." + strconv.Itoa(ts.Hour) + ".data": bson.M{"$each": ts.Data}}})
+
 			bulkCount += 1
 			if bulkCount == 1000 {
 				bulkCount = 0
 				u.runBulk(bulk)
+				bulk = c.Bulk()
 			}
+
 		}
 	}
 	return u.runBulk(bulk)
@@ -130,6 +150,8 @@ func (u *MetricDao) runBulk(bulk *mgo.Bulk) error {
 	result, err := bulk.Run()
 	if err == nil {
 		fmt.Println("bulk result :{Matched: ", result.Matched, ", Modified: ", result.Modified, "}")
+	} else {
+		fmt.Println(err.Error())
 	}
 	return err
 }
@@ -170,6 +192,23 @@ func (u *MetricDao) mergeMetric(metric *Metric, met Metric) *Metric {
 		}
 	}
 	return metric
+}
+
+func (u *MetricDao) getMetricKey(m *Metric) string {
+	s := m.Date.String() + m.MetricName + m.HostName + m.EnvLocation
+	tags := make([]string, 0)
+	for tag, _ := range m.MetricTag {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	for _, v := range tags {
+		s += v
+		s += m.MetricTag[v]
+	}
+	signByte := []byte(s)
+	hash := md5.New()
+	hash.Write(signByte)
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (u *MetricDao) keyEquals(m1 *Metric, m2 *Metric) bool {

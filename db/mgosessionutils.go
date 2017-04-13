@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	m          *MgoSessionUtils
-	once       sync.Once
-	URL        string = "mongodb://localhost:27017"
+	m    *MgoSessionUtils
+	once sync.Once
+	URL  string = "mongodb://localhost:27017"
+	//URL        string = "mongodb://192.168.1.121:27017"
 	DB         string = "lizqdb"
 	COLLECTION string = "hezjcol"
 )
