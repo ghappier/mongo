@@ -1,34 +1,35 @@
 package pool
 
 import (
-	"github.com/ghappier/mongo/db"
+	"github.com/ghappier/mongo/storage"
+	"github.com/golang/glog"
 )
 
 type Dispatcher struct {
 	jobQueue chan Job
 	// A pool of workers channels that are registered with the dispatcher
-	workerPool chan chan Job
-	maxWorkers int
-	metricDao  *db.MetricDao
+	workerPool    chan chan Job
+	maxWorkers    int
+	storageHolder *storage.StorageHolder
 }
 
-func NewDispatcher(queue chan Job, maxWorkers int, dao *db.MetricDao) *Dispatcher {
+func NewDispatcher(queue chan Job, maxWorkers int, storageHolder *storage.StorageHolder) *Dispatcher {
 	pool := make(chan chan Job, maxWorkers)
 	return &Dispatcher{
-		jobQueue:   queue,
-		workerPool: pool,
-		maxWorkers: maxWorkers,
-		metricDao:  dao,
+		jobQueue:      queue,
+		workerPool:    pool,
+		maxWorkers:    maxWorkers,
+		storageHolder: storageHolder,
 	}
 }
 
 func (d *Dispatcher) Run() {
 	// starting n number of workers
 	for i := 0; i < d.maxWorkers; i++ {
-		worker := NewWorker(d.workerPool, d.metricDao)
+		worker := NewWorker(d.workerPool, d.storageHolder)
 		worker.Start()
 	}
-
+	glog.Infof("start %d worker complete\n", d.maxWorkers)
 	go d.dispatch()
 }
 

@@ -4,28 +4,29 @@ import (
 	//"fmt"
 	//"log"
 	//"os"
-	"github.com/ghappier/mongo/db"
+	"github.com/ghappier/mongo/storage"
+	"github.com/prometheus/prometheus/storage/remote"
 )
 
 // Job represents the job to be run
 type Job struct {
-	Metric db.Metric
+	WriteRequest *remote.WriteRequest
 }
 
 // Worker represents the worker that executes the job
 type Worker struct {
-	workerPool chan chan Job
-	jobChannel chan Job
-	quit       chan bool
-	metricDao  *db.MetricDao
+	workerPool    chan chan Job
+	jobChannel    chan Job
+	quit          chan bool
+	storageHolder *storage.StorageHolder
 }
 
-func NewWorker(workerPool chan chan Job, dao *db.MetricDao) Worker {
+func NewWorker(workerPool chan chan Job, storageHolder *storage.StorageHolder) Worker {
 	return Worker{
-		workerPool: workerPool,
-		jobChannel: make(chan Job, 1000),
-		quit:       make(chan bool),
-		metricDao:  dao,
+		workerPool:    workerPool,
+		jobChannel:    make(chan Job, 100),
+		quit:          make(chan bool),
+		storageHolder: storageHolder,
 	}
 }
 
@@ -39,14 +40,7 @@ func (w Worker) Start() {
 
 			select {
 			case job := <-w.jobChannel:
-				/*
-					// we have received a work request.
-					if err := job.Payload.Save(); err != nil {
-						//log.Errorf("Error uploading to S3: %s", err.Error())
-						fmt.Errorf("Error uploading to S3: %s", err.Error())
-					}
-				*/
-				w.metricDao.Add(job.Metric)
+				w.storageHolder.Save(job.WriteRequest)
 			case <-w.quit:
 				// we have received a signal to stop
 				return
