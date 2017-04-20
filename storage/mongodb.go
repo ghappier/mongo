@@ -88,20 +88,20 @@ func (u *MongodbStorage) MongodbStorageTimer(mongodbConfig *config.MongodbConfig
 }
 
 func (u *MongodbStorage) bulkSave(collection string, dataChannel chan model.Metric) {
-	metrics := new([]model.Metric)
-	//metrics := make([]model.Metric, 0, u.mongodbConfig.BulkSize)
+	//metrics := new([]model.Metric)
+	metrics := make([]model.Metric, 0, u.mongodbConfig.BulkSize)
 LABEL_BREAK:
 	for i := 0; i < u.mongodbConfig.BulkSize; i++ {
 		select {
 		case metric := <-dataChannel:
-			//metrics = append(metrics, metric)
-			metrics = u.merge(metrics, metric)
+			metrics = append(metrics, metric)
+			//metrics = u.merge(metrics, metric)
 		default:
 			break LABEL_BREAK
 		}
 	}
-	//u.insert(collection, &metrics)
-	u.insert(collection, metrics)
+	u.insert(collection, &metrics)
+	//u.insert(collection, metrics)
 }
 
 func (u *MongodbStorage) insert(collection string, metrics *[]model.Metric) error {
@@ -150,7 +150,7 @@ func (u *MongodbStorage) insert(collection string, metrics *[]model.Metric) erro
 		}
 
 		for _, ts := range v.Timeseries {
-			bulk.Update(selector, bson.M{"$set": bson.M{"lastest_value": v.LastestValue}, "$push": bson.M{"timeseries." + strconv.Itoa(ts.Hour) + ".data": bson.M{"$each": ts.Data}}})
+			bulk.Update(selector, bson.M{"$set": bson.M{"lastest_value": v.LastestValue, "lastest_update_date": v.LastestUpdateDate}, "$push": bson.M{"timeseries." + strconv.Itoa(ts.Hour) + ".data": bson.M{"$each": ts.Data}}})
 
 			bulkCount += 1
 			if bulkCount == 1000 {
