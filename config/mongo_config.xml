@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configs>
 	<config name="mongodb.url">
-		<value>192.168.1.103:27017</value>
+		<value>192.168.1.101:27017</value>
 	</config>
 	<config name="mongodb.dbName">
 		<value>lizqdb</value>
@@ -37,7 +37,7 @@
 		<value>10</value>
 	</config>
 	<config name="prom-receiver.output.mongodb.try_times">
-		<value>5</value>
+		<value>1</value>
 	</config>
 	<config name="prom-receiver.output.mongodb.try_interval">
 		<value>10</value>

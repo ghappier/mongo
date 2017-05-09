@@ -30,6 +30,17 @@ func GetInstance(mongodbConfig *config.MongodbConfig) *MgoUtils {
 			mongodbConfig: mongodbConfig,
 			mgoSession:    session,
 		}
+		go func() {
+			for {
+				select {
+				case <-time.After(time.Minute * 1):
+					if m.GetSession() == nil {
+						s, _ := tryDial(mongodbConfig)
+						m.mgoSession = s
+					}
+				}
+			}
+		}()
 	})
 	return m
 }
@@ -49,6 +60,7 @@ func (p MgoUtils) GetSession() *mgo.Session {
 
 //连接mongodb
 func mydial(mongodbConfig *config.MongodbConfig) (*mgo.Session, error) {
+
 	session, err := mgo.DialWithInfo(&mgo.DialInfo{
 		Addrs:     strings.Split(mongodbConfig.Url, ","),
 		Username:  mongodbConfig.Username,
@@ -62,6 +74,21 @@ func mydial(mongodbConfig *config.MongodbConfig) (*mgo.Session, error) {
 		session.SetSocketTimeout(1 * time.Minute)
 	}
 	return session, err
+	/*
+		var url string
+		//mongodb://myuser:mypass@localhost:40001,otherhost:40001/mydb
+		if mongodbConfig.Username == "" {
+			url = fmt.Sprintf("mongodb://%s:%s@%s/%s", mongodbConfig.Username, mongodbConfig.Password, mongodbConfig.Url, mongodbConfig.Db)
+		} else {
+			url = fmt.Sprintf("mongodb://%s/%s", mongodbConfig.Url, mongodbConfig.Db)
+		}
+		session, err := mgo.Dial(url)
+		if err == nil {
+			session.SetSyncTimeout(1 * time.Minute)
+			session.SetSocketTimeout(1 * time.Minute)
+		}
+		return session, err
+	*/
 }
 
 //重连mongodb

@@ -122,6 +122,7 @@ func (u *MongodbStorage) insert(collection string, metrics *[]model.Metric) erro
 	c := session.DB(u.mongodbConfig.Db).C(collection)
 	bulk := c.Bulk()
 	bulkCount := 0
+
 	for _, v := range *metrics {
 		selector := bson.M{"date": v.Date, "metric_name": v.MetricName, "hostname": v.HostName}
 		for k, v := range v.MetricTag {
@@ -162,6 +163,68 @@ func (u *MongodbStorage) insert(collection string, metrics *[]model.Metric) erro
 		}
 	}
 	return u.runBulk(bulk)
+
+	/*
+		var keys []string
+		for _, v := range *metrics {
+			selector := bson.M{"date": v.Date, "metric_name": v.MetricName, "hostname": v.HostName}
+			for k, v := range v.MetricTag {
+				selector["metric_tag."+k] = v
+			}
+			keys = make([]string, 0, 1000)
+			metricKey := u.getMetricKey(&v)
+			if _, found := MetricKeyCache.Get(metricKey); !found {
+				//MetricKeyCache.Set(metricKey, true, cache.NoExpiration)
+
+				updateSet := bson.M{"lastest_value": v.LastestValue, "lastest_update_date": v.LastestUpdateDate}
+				timeSeries := make([]model.Timeseries, 0, 24)
+				for i := 0; i < 24; i++ {
+					ts := model.Timeseries{Hour: i, Data: make([]model.Data, 0, 0)}
+					timeSeries = append(timeSeries, ts)
+				}
+				updateSetOnInsert := bson.M{"timeseries": timeSeries}
+				bulk.Upsert(selector, bson.M{"$set": updateSet, "$setOnInsert": updateSetOnInsert})
+
+				bulkCount += 1
+				if bulkCount == 1000 {
+					err := u.runBulk(bulk)
+					if err == nil {
+						for _, key := range keys {
+							MetricKeyCache.Set(key, true, cache.NoExpiration)
+						}
+					}
+					keys = make([]string, 0, 1000)
+					bulk = c.Bulk()
+					bulkCount = 0
+				}
+			}
+		}
+		err := u.runBulk(bulk)
+		if err == nil {
+			for _, key := range keys {
+				MetricKeyCache.Set(key, true, cache.NoExpiration)
+			}
+		}
+		bulk = c.Bulk()
+		bulkCount = 0
+
+		for _, v := range *metrics {
+			selector := bson.M{"date": v.Date, "metric_name": v.MetricName, "hostname": v.HostName}
+			for k, v := range v.MetricTag {
+				selector["metric_tag."+k] = v
+			}
+			for _, ts := range v.Timeseries {
+				bulk.Update(selector, bson.M{"$set": bson.M{"lastest_value": v.LastestValue, "lastest_update_date": v.LastestUpdateDate}, "$push": bson.M{"timeseries." + strconv.Itoa(ts.Hour) + ".data": bson.M{"$each": ts.Data}}})
+				bulkCount += 1
+				if bulkCount == 1000 {
+					u.runBulk(bulk)
+					bulk = c.Bulk()
+					bulkCount = 0
+				}
+			}
+		}
+		return u.runBulk(bulk)
+	*/
 }
 
 func (u *MongodbStorage) runBulk(bulk *mgo.Bulk) error {
